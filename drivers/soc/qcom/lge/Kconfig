@@ -649,6 +649,12 @@ config LGE_PKM
 	help
 	   Say Y here to enable Periodic Kernel Monitoring driver for LG IMA
 
+config LGE_MSM8996_ENABLE_VENDOR
+	bool "Enables using the vendor partition"
+	depends on MACH_LGE
+	help
+	  Enables the /vendor partition in device-tree fstab
+
 endmenu
 
 menu "LGE QFPROM Values"
