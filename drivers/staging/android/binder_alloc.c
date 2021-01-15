@@ -251,6 +251,11 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 			       alloc->pid, user_page_addr);
 			goto err_vm_insert_page_failed;
 		}
+
+		if (index + 1 > alloc->pages_high)
+			alloc->pages_high = index + 1;
+
+		trace_binder_alloc_page_end(alloc, index);
 		/* vm_insert_page does not seem to increment the refcount */
 	}
 	if (mm) {
@@ -511,7 +516,7 @@ static void binder_delete_free_buffer(struct binder_alloc *alloc,
 		binder_alloc_debug(BINDER_DEBUG_BUFFER_ALLOC,
 				   "%d: merge free, buffer %pK do not share page with %pK or %pK\n",
 				   alloc->pid, buffer->data,
-				   prev->data, next->data);
+				   prev->data, next ? next->data : NULL);
 		binder_update_page_range(alloc, 0, buffer_start_page(buffer),
 					 buffer_start_page(buffer) + PAGE_SIZE);
 	}
@@ -767,6 +772,35 @@ void binder_alloc_print_allocated(struct seq_file *m,
 }
 
 /**
+ * binder_alloc_print_pages() - print page usage
+ * @m:     seq_file for output via seq_printf()
+ * @alloc: binder_alloc for this proc
+ */
+void binder_alloc_print_pages(struct seq_file *m,
+			      struct binder_alloc *alloc)
+{
+	struct binder_lru_page *page;
+	int i;
+	int active = 0;
+	int lru = 0;
+	int free = 0;
+
+	mutex_lock(&alloc->mutex);
+	for (i = 0; i < alloc->buffer_size / PAGE_SIZE; i++) {
+		page = &alloc->pages[i];
+		if (!page->page_ptr)
+			free++;
+		else if (list_empty(&page->lru))
+			active++;
+		else
+			lru++;
+	}
+	mutex_unlock(&alloc->mutex);
+	seq_printf(m, "  pages: %d:%d:%d\n", active, lru, free);
+	seq_printf(m, "  pages high watermark: %zu\n", alloc->pages_high);
+}
+
+/**
  * binder_alloc_get_allocated_count() - return count of buffers
  * @alloc: binder_alloc for this proc
  *
@@ -894,7 +928,7 @@ binder_shrink_scan(struct shrinker *shrink, struct shrink_control *sc)
 	return ret;
 }
 
-struct shrinker binder_shrinker = {
+static struct shrinker binder_shrinker = {
 	.count_objects = binder_shrink_count,
 	.scan_objects = binder_shrink_scan,
 	.seeks = DEFAULT_SEEKS,

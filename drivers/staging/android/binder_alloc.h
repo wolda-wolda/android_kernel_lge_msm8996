@@ -79,6 +79,7 @@ struct binder_buffer {
  *                      page of mmap'd space
  * @buffer_size:        size of address space specified via mmap
  * @pid:                pid for associated binder_proc (invariant after init)
+ * @pages_high:         high watermark of offset in @pages
  *
  * Bookkeeping structure for per-proc address space management for binder
  * buffers. It is normally initialized during binder_init() and binder_mmap()
@@ -99,6 +100,7 @@ struct binder_alloc {
 	size_t buffer_size;
 	uint32_t buffer_free;
 	int pid;
+	size_t pages_high;
 };
 
 extern struct binder_buffer *binder_alloc_new_buf(struct binder_alloc *alloc,
