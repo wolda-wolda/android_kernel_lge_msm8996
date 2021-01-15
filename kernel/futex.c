@@ -399,7 +399,7 @@ get_futex_key(u32 __user *uaddr, int fshared, union futex_key *key, int rw)
 {
 	unsigned long address = (unsigned long)uaddr;
 	struct mm_struct *mm = current->mm;
-	struct page *page;
+	struct page *page, *page_head;
 	struct address_space *mapping;
 	int err, ro = 0;
 
@@ -443,6 +443,42 @@ again:
 	else
 		err = 0;
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	page_head = page;
+	if (unlikely(PageTail(page))) {
+		put_page(page);
+		/* serialize against __split_huge_page_splitting() */
+		local_irq_disable();
+		if (likely(__get_user_pages_fast(address, 1, !ro, &page) == 1)) {
+			page_head = compound_head(page);
+			/*
+			 * page_head is valid pointer but we must pin
+			 * it before taking the PG_lock and/or
+			 * PG_compound_lock. The moment we re-enable
+			 * irqs __split_huge_page_splitting() can
+			 * return and the head page can be freed from
+			 * under us. We can't take the PG_lock and/or
+			 * PG_compound_lock on a page that could be
+			 * freed from under us.
+			 */
+			if (page != page_head) {
+				get_page(page_head);
+				put_page(page);
+			}
+			local_irq_enable();
+		} else {
+			local_irq_enable();
+			goto again;
+		}
+	}
+#else
+	page_head = compound_head(page);
+	if (page != page_head) {
+		get_page(page_head);
+		put_page(page);
+	}
+#endif
+
 	/*
 	 * The treatment of mapping from this point on is critical. The page
 	 * lock protects many things but in this context the page lock
@@ -454,8 +490,8 @@ again:
 	 * From this point on, mapping will be re-verified if necessary and
 	 * page lock will be acquired only if it is unavoidable
 	 */
-	page = compound_head(page);
-	mapping = READ_ONCE(page->mapping);
+
+	mapping = READ_ONCE(page_head->mapping);
 
 	/*
 	 * If page->mapping is NULL, then it cannot be a PageAnon
@@ -482,8 +518,8 @@ again:
 		 */
 		lock_page(page);
 		shmem_swizzled = PageSwapCache(page) || page->mapping;
-		unlock_page(page);
-		put_page(page);
+		unlock_page(page_head);
+		put_page(page_head);
 
 		if (shmem_swizzled)
 			goto again;
@@ -533,9 +569,9 @@ again:
 		 */
 		rcu_read_lock();
 
-		if (READ_ONCE(page->mapping) != mapping) {
+		if (READ_ONCE(page_head->mapping) != mapping) {
 			rcu_read_unlock();
-			put_page(page);
+			put_page(page_head);
 
 			goto again;
 		}
@@ -543,7 +579,7 @@ again:
 		inode = READ_ONCE(mapping->host);
 		if (!inode) {
 			rcu_read_unlock();
-			put_page(page);
+			put_page(page_head);
 
 			goto again;
 		}
@@ -561,7 +597,7 @@ again:
 		 */
 		if (WARN_ON_ONCE(!atomic_inc_not_zero(&inode->i_count))) {
 			rcu_read_unlock();
-			put_page(page);
+			put_page(page_head);
 
 			goto again;
 		}
@@ -582,7 +618,7 @@ again:
 	}
 
 out:
-	put_page(page);
+	put_page(page_head);
 	return err;
 }
 
