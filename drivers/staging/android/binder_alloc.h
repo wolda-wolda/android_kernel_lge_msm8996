@@ -87,7 +87,6 @@ struct binder_buffer {
  */
 struct binder_alloc {
 	struct mutex mutex;
-	struct task_struct *tsk;
 	struct vm_area_struct *vma;
 	struct mm_struct *vma_vm_mm;
 	void *buffer;
