@@ -134,17 +134,12 @@ enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
 static inline void update_saved_ttbr0(struct task_struct *tsk,
 				      struct mm_struct *mm)
 {
-	u64 ttbr;
-
-	if (!system_uses_ttbr0_pan())
-		return;
-
-	if (mm == &init_mm)
-		ttbr = __pa_symbol(empty_zero_page);
-	else
+	if (system_uses_ttbr0_pan()) {
+		u64 ttbr;
+		BUG_ON(mm->pgd == swapper_pg_dir);
 		ttbr = virt_to_phys(mm->pgd) | ASID(mm) << 48;
-
-	WRITE_ONCE(task_thread_info(tsk)->ttbr0, ttbr);
+		WRITE_ONCE(task_thread_info(tsk)->ttbr0, ttbr);
+	}
 }
 #else
 static inline void update_saved_ttbr0(struct task_struct *tsk,
