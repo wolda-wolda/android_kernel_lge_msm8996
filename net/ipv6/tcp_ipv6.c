@@ -1177,17 +1177,9 @@ static void tcp_v6_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
 	 */
 	tcp_v6_send_ack(sk, skb, (sk->sk_state == TCP_LISTEN) ?
 			tcp_rsk(req)->snt_isn + 1 : tcp_sk(sk)->snd_nxt,
-			#ifdef CONFIG_LGP_DATA_TCPIP_MPTCP
-			tcp_rsk(req)->rcv_nxt, 0,
-			req->rcv_wnd, tcp_time_stamp, req->ts_recent, sk->sk_bound_dev_if,
-			#else
-                   tcp_rsk(req)->rcv_nxt, req->rcv_wnd,
-                   tcp_time_stamp, req->ts_recent, sk->sk_bound_dev_if,
-			#endif
-			tcp_v6_md5_do_lookup(sk, &ipv6_hdr(skb)->daddr),
-			#ifdef CONFIG_LGP_DATA_TCPIP_MPTCP
-			0, 0, 0);
-			#else
+			tcp_rsk(req)->rcv_nxt, req->rcv_wnd,
+			tcp_time_stamp, req->ts_recent, sk->sk_bound_dev_if,
+			tcp_v6_md5_do_lookup(sk, &ipv6_hdr(skb)->saddr),
 			0, 0);
 			#endif
 }
