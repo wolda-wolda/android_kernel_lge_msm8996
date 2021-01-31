@@ -855,7 +855,7 @@ config LGE_PM_WATERPROOF_PROTECTION
 
 config LGE_PM_INCOMPATIBLE_HVDCP_SUPPORT
 	bool "LGE_PM_INCOMPATIBLE_HVDCP_SUPPORT"
-	default n
+	default y
 	depends on LGE_PM
 	help
 	  To make normal charging when the incompatible hvdcp connected
