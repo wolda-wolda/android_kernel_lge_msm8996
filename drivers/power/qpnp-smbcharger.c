@@ -40,10 +40,6 @@
 #include <linux/ktime.h>
 #include <linux/pmic-voter.h>
 
-#ifdef CONFIG_FORCE_FAST_CHARGE
-#include <linux/fastchg.h>
-#endif
-
 #ifdef CONFIG_LGE_PM_LGE_POWER_CORE
 #include <soc/qcom/lge/power/lge_power_class.h>
 #endif
@@ -84,6 +80,8 @@
 #ifdef CONFIG_LGE_PM_LGE_POWER_CLASS_ADC_QCT
 #include <soc/qcom/lge/lge_monitor_thermal.h>
 #endif
+
+#include <linux/fastchg.h>
 
 /* Mask/Bit helpers */
 #define _SMB_MASK(BITS, POS) \
@@ -669,7 +667,6 @@ enum incompatible_hvdcp_detect_step {
 	INCOMPATIBLE_DETECTED,
 	HVDCP_DETECT_CONFIRMED,
 };
-#define USBIN_VOLT_THRESHOLD  6000
 #endif
 
 #ifdef CONFIG_LGE_PM_FACTORY_TESTMODE
@@ -861,7 +858,7 @@ static int lgcc_set_charging_enable(struct smbchg_chip *chip,
 		int enable) {
 	int rc = 0;
 
-	rc = vote(chip->battchg_suspend_votable, LGCC_EN_VOTER, !enable, 0);
+	vote(chip->battchg_suspend_votable, LGCC_EN_VOTER, !enable, 0);
 	if (rc < 0)
 		pr_smb(PR_LGE, "failed to set Charging Status \n");
 
@@ -873,8 +870,8 @@ const char * lgcc_get_effective_icl(void) {
 	const char *rc;
 
 	rc = get_effective_client(smb_chip->usb_icl_votable);
-//	if (!rc)
-//		pr_err("Failed to get fcc votable\n");
+	if (rc < 0)
+		pr_err("Failed to get fcc votable\n");
 
 	return rc;
 }
@@ -2414,11 +2411,8 @@ static int smbchg_set_usb_current_max(struct smbchg_chip *chip,
 			}
 			chip->usb_max_current_ma = 500;
 		}
-#ifdef CONFIG_FORCE_FAST_CHARGE
-		if ((force_fast_charge > 0 && current_ma == CURRENT_500_MA) || current_ma == CURRENT_900_MA) {
-#else
-		if (current_ma == CURRENT_900_MA) {
-#endif
+		if ((force_fast_charge && current_ma == CURRENT_500_MA) ||
+				current_ma == CURRENT_900_MA) {
 			rc = smbchg_sec_masked_write(chip,
 					chip->usb_chgpth_base + CHGPTH_CFG,
 					CFG_USB_2_3_SEL_BIT, CFG_USB_3);
@@ -6803,6 +6797,11 @@ static void hvdcp_disable_work(struct work_struct *work){
 	/* disable HVDCP */
 	cancel_delayed_work(&chip->hvdcp_recovery_work);
 
+	if(chip->incompatible_hvdcp_detected != INCOMPATIBLE_DETECTED){
+		pr_smb(PR_LGE, "Not Incompatible case. Force out.");
+		return;
+	}
+
 	usb_present = is_usb_present(chip);
 
 	if(!usb_present){
@@ -8717,10 +8716,6 @@ skip_current_for_non_sdp:
 					if ((chip->ctype_rp == 1) &&
 						(usb_supply_type ==
 							 POWER_SUPPLY_TYPE_USB_DCP)) {
-#ifdef CONFIG_LGE_PM_INCOMPATIBLE_HVDCP_SUPPORT
-						pr_smb(PR_LGE, "hvdcp detected status = %d\n",chip->incompatible_hvdcp_detected);
-						if(chip->incompatible_hvdcp_detected != INCOMPATIBLE_DETECTED)
-#endif
 						schedule_delayed_work(&chip->hvdcp_det_prepare_work,
 							msecs_to_jiffies(500));
 					}
@@ -9726,10 +9721,6 @@ static irqreturn_t usbin_uv_handler(int irq, void *_chip)
 	char *usb_type_name = "null";
 #endif
 
-#ifdef CONFIG_LGE_PM_INCOMPATIBLE_HVDCP_SUPPORT
-	int usbin_volt;
-#endif
-
 	rc = smbchg_read(chip, &reg, chip->usb_chgpth_base + RT_STS, 1);
 	if (rc) {
 		pr_err("could not read rt sts: %d", rc);
@@ -9762,11 +9753,11 @@ static irqreturn_t usbin_uv_handler(int irq, void *_chip)
 		goto out;
 
 	if ((reg & USBIN_UV_BIT) && (reg & USBIN_SRC_DET_BIT)) {
-#ifdef CONFIG_LGE_PM_INCOMPATIBLE_HVDCP_SUPPORT
-		usbin_volt = get_usb_adc(chip);
-		pr_smb(PR_STATUS, "Very weak charger detected. VBUS[%d]\n", usbin_volt);
+#ifdef CONFIG_LGE_PM_DEBUG
+		pr_smb(PR_STATUS, "Very weak charger detected. VBUS[%d]\n",
+				get_usb_adc(chip));
 #else
-		pr_smb(PR_STATUS, "Very weak charger detected. VBUS[%d]\n", get_usb_adc(chip));
+		pr_smb(PR_STATUS, "Very weak charger detected\n");
 #endif
 #ifdef CONFIG_LGE_PM_INCOMPATIBLE_HVDCP_SUPPORT
 		if (chip->incompatible_hvdcp_det_ignore_uv){
@@ -9779,24 +9770,19 @@ static irqreturn_t usbin_uv_handler(int irq, void *_chip)
 			goto out;
 		}
 
-		if (usbin_volt > USBIN_VOLT_THRESHOLD){
-			pr_smb(PR_LGE, "USBIN is high enough. skip incompatible check work.\n");
-		}else{
-			if(chip->incompatible_hvdcp_detected == FIRST_APSD_DETECT_DCP){
-				chip->incompatible_hvdcp_detected = WEAK_CHARGER_DETECTED;
-				pr_smb(PR_LGE, "weak hvdcp detected. status = %d\n",chip->incompatible_hvdcp_detected);
-			} else if (chip->incompatible_hvdcp_detected == SECOND_APSD_DETECT_DCP){
-				chip->incompatible_hvdcp_detected = INCOMPATIBLE_DETECTED;
-				pr_smb(PR_LGE, "weak hvdcp detected. status = %d\n",chip->incompatible_hvdcp_detected);
-			} else {
-				pr_smb(PR_LGE, "weak hvdcp detected. status = %d\n",chip->incompatible_hvdcp_detected);
-				if (is_hvdcp_present(chip)) {
-					pr_err("Incompatible_hvdcp_detected. Forced to 5V charge.\n");
-					chip->incompatible_hvdcp_detected = INCOMPATIBLE_DETECTED;
-					cancel_delayed_work(&chip->hvdcp_disable_work);
-					schedule_delayed_work(&chip->hvdcp_disable_work,
-							msecs_to_jiffies(HVDCP_DISABLE_DELAY_MS));
-				}
+		if(chip->incompatible_hvdcp_detected == FIRST_APSD_DETECT_DCP){
+			chip->incompatible_hvdcp_detected = WEAK_CHARGER_DETECTED;
+			pr_smb(PR_LGE, "weak hvdcp detected. status = %d\n",chip->incompatible_hvdcp_detected);
+		} else if (chip->incompatible_hvdcp_detected == SECOND_APSD_DETECT_DCP){
+			chip->incompatible_hvdcp_detected = INCOMPATIBLE_DETECTED;
+			pr_smb(PR_LGE, "weak hvdcp detected. status = %d\n",chip->incompatible_hvdcp_detected);
+		} else {
+			pr_smb(PR_LGE, "weak hvdcp detected. status = %d\n",chip->incompatible_hvdcp_detected);
+			if (is_hvdcp_present(chip) && (chip->incompatible_hvdcp_detected == INCOMPATIBLE_DETECTED)) {
+				pr_err("Incompatible_hvdcp_detected. Forced to 5V charge.\n");
+				cancel_delayed_work(&chip->hvdcp_disable_work);
+				schedule_delayed_work(&chip->hvdcp_disable_work,
+						msecs_to_jiffies(HVDCP_DISABLE_DELAY_MS));
 			}
 		}
 #endif
@@ -10120,7 +10106,7 @@ static int smbchg_check_chg_status(struct smbchg_chip *chip) {
 /* After test, make decision to delete or not */
 static void lgcc_charger_reginfo(struct work_struct *work) {
 	struct smbchg_chip *chip = container_of(work,
-	struct smbchg_chip, charging_info_work.work);
+		struct smbchg_chip, charging_info_work.work);
 	struct power_supply *parallel_psy = get_parallel_psy(chip);
 	int rc, batt_volt, batt_temp;
 	union power_supply_propval ret = {0, };
@@ -10445,8 +10431,8 @@ static void lgcc_charger_reginfo(struct work_struct *work) {
 	else
 		delay_time = CHARGING_INFORM_NORMAL_TIME;
 
-	schedule_delayed_work(&chip->charging_info_work,
-		round_jiffies_relative(msecs_to_jiffies(delay_time)));
+		schedule_delayed_work(&chip->charging_info_work,
+			round_jiffies_relative(msecs_to_jiffies(delay_time)));
 
 }
 #endif
@@ -12375,7 +12361,7 @@ static int smbchg_probe(struct spmi_device *spmi)
 	init_completion(&chip->usbin_uv_lowered);
 	init_completion(&chip->usbin_uv_raised);
 	init_completion(&chip->hvdcp_det_done);
-#ifdef CONFIG_LGE_PM_LGE_POWER_CLASS_CHARGING_CONTROLLER
+#ifdef CONFIG_LGE_PM_DEBUG
 	INIT_DELAYED_WORK(&chip->charging_info_work, lgcc_charger_reginfo);
 	schedule_delayed_work(&chip->charging_info_work,
 		round_jiffies_relative(msecs_to_jiffies(CHARGING_INFORM_NORMAL_TIME)));
@@ -12655,7 +12641,7 @@ static int smbchg_probe(struct spmi_device *spmi)
 #endif
 #endif
 #endif
-#ifdef CONFIG_LGE_PM_LGE_POWER_CLASS_CHARGING_CONTROLLER
+#ifdef CONFIG_LGE_PM_DEBUG
 	schedule_delayed_work(&chip->charging_info_work,
 		round_jiffies_relative(msecs_to_jiffies(CHARGING_INFORM_NORMAL_TIME)));
 #endif
@@ -12756,7 +12742,7 @@ static int smbchg_remove(struct spmi_device *spmi)
 	destroy_votable(chip->usb_icl_votable);
 	destroy_votable(chip->fcc_votable);
 
-#ifdef CONFIG_LGE_PM_LGE_POWER_CLASS_CHARGING_CONTROLLER
+#ifdef CONFIG_LGE_PM_DEBUG
 	cancel_delayed_work(&chip->charging_info_work);
 #endif
 #ifdef CONFIG_LGE_PM_MAXIM_EVP_CONTROL
